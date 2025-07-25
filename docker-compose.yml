@@ -1,0 +1,193 @@
+version: "3.8"
+
+services:
+  # Databases
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: event_booking
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - event-booking-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - event-booking-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Message Queue (NATS)
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks:
+      - event-booking-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8222/healthz",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Mock API Gateway
+  api-gateway:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    environment:
+      - USER_SERVICE_URL=http://user-service:3001
+      - EVENT_SERVICE_URL=http://event-service:3002
+      - BOOKING_SERVICE_URL=http://booking-service:3003
+      - NOTIFICATION_SERVICE_URL=http://notification-service:3004
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./mock-services/api-gateway:/app
+    command: ["sh", "-c", "npm install && npm start"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      event-service:
+        condition: service_started
+      booking-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+    networks:
+      - event-booking-network
+
+  # Mock User Service
+  user-service:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "3001:3001"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/event_booking
+      - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
+    volumes:
+      - ./mock-services/user-service:/app
+    command: ["sh", "-c", "npm install && npm start"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - event-booking-network
+
+  # Mock Event Service
+  event-service:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "3002:3002"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/event_booking
+      - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
+    volumes:
+      - ./mock-services/event-service:/app
+    command: ["sh", "-c", "npm install && npm start"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - event-booking-network
+
+  # Mock Booking Service
+  booking-service:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "3003:3003"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/event_booking
+      - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
+      - USER_SERVICE_URL=http://user-service:3001
+      - EVENT_SERVICE_URL=http://event-service:3002
+    volumes:
+      - ./mock-services/booking-service:/app
+    command: ["sh", "-c", "npm install && npm start"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      event-service:
+        condition: service_started
+    networks:
+      - event-booking-network
+
+  # Mock Notification Service
+  notification-service:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "3004:3004"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/event_booking
+      - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
+    volumes:
+      - ./mock-services/notification-service:/app
+    command: ["sh", "-c", "npm install && npm start"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - event-booking-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  event-booking-network:
+    driver: bridge
